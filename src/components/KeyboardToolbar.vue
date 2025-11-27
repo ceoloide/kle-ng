@@ -94,6 +94,16 @@
                 Download PNG
               </a>
             </li>
+            <li>
+              <a
+                class="dropdown-item"
+                data-testid="export-ergogen-gui"
+                href="#"
+                @click.prevent="exportToErgogenGui"
+              >
+                Edit in Ergogen Web GUI
+              </a>
+            </li>
           </ul>
         </div>
 
@@ -179,7 +189,8 @@ import { createPngWithKleLayout, extractKleLayout, hasKleMetadata } from '@/util
 import { isViaFormat, convertViaToKle, convertKleToVia } from '@/utils/via-import'
 import { stringifyWithRounding } from '@/utils/serialization'
 import { decodeLayoutFromUrl, fetchGistLayout, loadErgogenKeyboard } from '@/utils/url-sharing'
-import { parseErgogenConfig } from '@/utils/ergogen-converter'
+import { parseErgogenConfig, keyboardToErgogenConfig } from '@/utils/ergogen-converter'
+import { Keyboard } from '@adamws/kle-serial'
 import LZString from 'lz-string'
 
 // Store
@@ -854,6 +865,58 @@ const shareLayout = async () => {
   } catch (error) {
     console.error('Error generating share link:', error)
     toast.showError('Please try again.', 'Error generating share link')
+  }
+}
+
+// Export to Ergogen Web GUI
+const exportToErgogenGui = async () => {
+  try {
+    // Get the current keyboard layout
+    const keyboard = keyboardStore.getSerializedData('internal') as Keyboard
+
+    if (!keyboard || keyboard.keys.length === 0) {
+      toast.showError('No keyboard layout to export', 'Export Failed')
+      return
+    }
+
+    // Convert keyboard to Ergogen config (YAML string)
+    const ergogenConfigYaml = keyboardToErgogenConfig(keyboard)
+
+    // Create the config object (ignoring injections as per user's request)
+    const configObject = {
+      config: ergogenConfigYaml,
+    }
+
+    // Compress using LZString (similar to ergogen-gui's encodeConfig)
+    const compressed = LZString.compressToEncodedURIComponent(JSON.stringify(configObject))
+
+    // Create the URL
+    const ergogenUrl = `https://ergogen.xyz#${compressed}`
+
+    // Copy to clipboard if available
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(ergogenUrl)
+      toast.showSuccess(
+        'The Ergogen Web GUI link has been copied to your clipboard. Open it in Ergogen to continue editing!',
+        'Link copied successfully!',
+      )
+    } else {
+      // Fallback: show the URL in a custom toast with longer duration
+      toast.showInfo(
+        'Copy this link to open in Ergogen Web GUI: ' + ergogenUrl,
+        'Ergogen Web GUI Link Generated',
+        {
+          duration: 10000, // 10 seconds for manual copying
+          showCloseButton: true,
+        },
+      )
+    }
+
+    console.log('Ergogen URL generated:', ergogenUrl)
+  } catch (error) {
+    console.error('Error exporting to Ergogen Web GUI:', error)
+    const errorMessage = error instanceof Error ? error.message : 'Failed to export to Ergogen Web GUI'
+    toast.showError(errorMessage, 'Export Failed')
   }
 }
 </script>

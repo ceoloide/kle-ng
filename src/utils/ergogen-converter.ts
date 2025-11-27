@@ -387,3 +387,154 @@ export async function parseErgogenConfig(config: string): Promise<Keyboard> {
     throw error instanceof Error ? error : new Error('Failed to parse Ergogen config')
   }
 }
+
+/**
+ * Converts a Keyboard layout to an Ergogen config (YAML format)
+ * This is a reverse operation of ergogenPointsToKeyboard
+ * @param keyboard - The keyboard layout to convert
+ * @returns YAML config string
+ */
+export function keyboardToErgogenConfig(keyboard: Keyboard): string {
+  if (keyboard.keys.length === 0) {
+    throw new Error('Keyboard has no keys to convert')
+  }
+
+  // Get spacing units from metadata or use defaults
+  const spacingX = keyboard.meta.spacing_x || 19
+  const spacingY = keyboard.meta.spacing_y || 19
+
+  // Calculate standard width and height from keys (in KLE units)
+  const widths: number[] = []
+  const heights: number[] = []
+  for (const key of keyboard.keys) {
+    if (key.width !== undefined && !key.decal && !key.ghost) widths.push(key.width)
+    if (key.height !== undefined && !key.decal && !key.ghost) heights.push(key.height)
+  }
+
+  // Find most common width and height (in KLE units)
+  let standardWidthU = 1 // Default 1U in KLE units
+  if (widths.length >= 2) {
+    const widthCounts: Record<number, number> = {}
+    for (const w of widths) {
+      widthCounts[w] = (widthCounts[w] || 0) + 1
+    }
+    const mostCommonWidth = Object.keys(widthCounts).reduce((a, b) =>
+      widthCounts[Number(a)]! > widthCounts[Number(b)]! ? a : b,
+    )
+    standardWidthU = Number(mostCommonWidth)
+  }
+
+  let standardHeightU = 1 // Default 1U in KLE units
+  if (heights.length >= 2) {
+    const heightCounts: Record<number, number> = {}
+    for (const h of heights) {
+      heightCounts[h] = (heightCounts[h] || 0) + 1
+    }
+    const mostCommonHeight = Object.keys(heightCounts).reduce((a, b) =>
+      heightCounts[Number(a)]! > heightCounts[Number(b)]! ? a : b,
+    )
+    standardHeightU = Number(mostCommonHeight)
+  }
+
+  // Convert KLE units to mm
+  // KLE width/height are in "U" units, where 1U = standardWidth/standardHeight in mm
+  const standardWidthMm = spacingX > 1 ? spacingX - 1 : 18
+  const standardHeightMm = spacingY > 1 ? spacingY - 1 : 18
+
+  const denormalizeX = (value: number): number => new Decimal(value).mul(spacingX).toNumber()
+  const denormalizeY = (value: number): number => new Decimal(value).mul(spacingY).toNumber()
+  const denormalizeWidth = (value: number): number => new Decimal(value).mul(standardWidthMm).toNumber()
+  const denormalizeHeight = (value: number): number => new Decimal(value).mul(standardHeightMm).toNumber()
+
+  // Find the topmost and bottommost key to establish coordinate system for Y-flip
+  let minY = new Decimal(Infinity)
+  let maxY = new Decimal(-Infinity)
+  for (const key of keyboard.keys) {
+    if (key.decal || key.ghost) continue
+    const keyY = new Decimal(key.y)
+    if (keyY.lessThan(minY)) minY = keyY
+    const keyBottom = keyY.plus(new Decimal(key.height || standardHeightU))
+    if (keyBottom.greaterThan(maxY)) maxY = keyBottom
+  }
+
+  // Convert keys to Ergogen points format
+  const points: Record<string, ErgogenPoint> = {}
+
+  for (let i = 0; i < keyboard.keys.length; i++) {
+    const key = keyboard.keys[i]
+    
+    // Skip decal and ghost keys
+    if (key.decal || key.ghost) continue
+
+    // Get key dimensions in KLE units
+    const keyWidthU = key.width || standardWidthU
+    const keyHeightU = key.height || standardHeightU
+    
+    // Convert dimensions to mm
+    const keyWidthMm = denormalizeWidth(keyWidthU)
+    const keyHeightMm = denormalizeHeight(keyHeightU)
+    
+    // Convert from KLE coordinates (top-left corner, Y-down) to Ergogen (center, Y-up)
+    // KLE: (0,0) is top-left, Y increases downward
+    // Ergogen: (0,0) is bottom-left, Y increases upward
+    
+    // Get key center in KLE units (top-left corner + half width/height)
+    const keyCenterXU = new Decimal(key.x).plus(new Decimal(keyWidthU).div(2))
+    const keyCenterYU = new Decimal(key.y).plus(new Decimal(keyHeightU).div(2))
+    
+    // Convert X to mm (no flip needed)
+    const centerX = denormalizeX(keyCenterXU.toNumber())
+    
+    // Flip Y-axis: KLE Y-down to Ergogen Y-up
+    // In KLE, topmost key has smallest Y. In Ergogen, bottommost key has smallest Y.
+    // We need to flip around the bottom of the keyboard
+    const keyboardHeightU = maxY.minus(minY)
+    const keyYInKle = keyCenterYU.minus(minY)
+    const flippedYU = keyboardHeightU.minus(keyYInKle)
+    const centerY = denormalizeY(flippedYU.toNumber())
+
+    // Handle rotation - reverse the rotation direction
+    let rotation = 0
+    if (key.rotation_angle && key.rotation_angle !== 0) {
+      rotation = -key.rotation_angle
+    }
+
+    // Generate a name for the key
+    const keyName = `key_${i}`
+
+    // Create the point
+    const point: ErgogenPoint = {
+      x: centerX,
+      y: centerY,
+      meta: {
+        width: keyWidthMm,
+        height: keyHeightMm,
+      },
+    }
+
+    // Add rotation if present
+    if (rotation !== 0) {
+      point.r = rotation
+    }
+
+    // Add label if present
+    if (key.labels && key.labels[0]) {
+      point.meta!.label = key.labels[0]
+    }
+
+    points[keyName] = point
+  }
+
+  // Create the Ergogen config structure
+  const ergogenConfig = {
+    points,
+  }
+
+  // Convert to YAML
+  return yaml.dump(ergogenConfig, {
+    indent: 2,
+    lineWidth: -1, // No line width limit
+    quotingType: '"',
+    forceQuotes: false,
+  })
+}
